@@ -1,0 +1,23 @@
+{
+  "manifest_version": 2,
+  "name": "Ghost Mirror",
+  "version": "4.15",
+  "description": "Mirror Claude.ai conversation to a separate scrollable window",
+  "permissions": ["activeTab", "storage", "tabs"],
+  "content_scripts": [{
+    "matches": ["https://claude.ai/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "background": {
+    "scripts": ["background.js"],
+    "persistent": false
+  },
+  "browser_action": {
+    "default_title": "Ghost Mirror",
+    "default_icon": "icon.svg"
+  },
+  "icons": { "48": "icon.svg" },
+  "web_accessible_resources": ["mirror.html", "mirror.js", "icon.svg"],
+  "content_security_policy": "script-src 'self'; object-src 'self'"
+}
