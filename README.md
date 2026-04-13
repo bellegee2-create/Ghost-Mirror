@@ -1,3 +1,4 @@
+<img width="2446" height="1402" alt="Screenshot 2026-04-13 085537" src="https://github.com/user-attachments/assets/8df42c89-4c82-4c6b-a5e2-aef0ae11bcd5" />
 # Ghost-Mirror
 
 
