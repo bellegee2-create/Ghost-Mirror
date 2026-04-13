@@ -1,7 +1,12 @@
-// content.js — Ghost Mirror v4.15
+// content.js — Ghost Mirror v4.16
 console.log("Ghost Mirror: content script loaded");
 
 let messageCache = [];
+
+// Pre-cache for virtualization: filename.toLowerCase() → ariaLabel (exact string)
+// Populated whenever we see a download button in the DOM.
+// Survives after the button is scrolled out and virtualized away.
+const downloadCache = new Map();
 
 function getAssistantEls() {
   const humanEls = Array.from(document.querySelectorAll('[data-testid="user-message"]'));
@@ -22,7 +27,6 @@ function getAssistantEls() {
   return assistantEls;
 }
 
-// Strip status/spinner child text so "Working..." doesn't appear in assistant messages
 function getCleanText(el) {
   const clone = el.cloneNode(true);
   clone.querySelectorAll('[class*="status"],[class*="spinner"],[class*="loading"],[class*="thinking"]')
@@ -40,9 +44,6 @@ function getAllSorted() {
   return all;
 }
 
-// Scan DOM for download cards.
-// ALL file types (zip, docx, py, txt, md, bat etc.) render button[aria-label^="Download "]
-// Filename is in the aria-label: "Download Consumer 1 " → strip "Download " prefix
 function findDownloadCards() {
   const cards = [];
   const assistantEls = getAssistantEls();
@@ -56,8 +57,6 @@ function findDownloadCards() {
     return ownerEl;
   }
 
-  // All file types — button[aria-label^="Download "]
-  // Exclude file-thumbnail (user upload cards)
   const btns = Array.from(document.querySelectorAll('button[aria-label^="Download "]'));
   btns.forEach(btn => {
     if (btn.closest('[data-testid="file-thumbnail"]')) return;
@@ -65,12 +64,13 @@ function findDownloadCards() {
     const fname = label.replace(/^Download\s+/i, '').trim();
     if (!fname) return;
     const ownerEl = assignOwner(btn);
-    cards.push({ filename: fname, buttonEl: btn, ownerEl, textOnly: false });
+    // Update pre-cache every time we see a button in DOM
+    downloadCache.set(fname.toLowerCase(), label);
+    cards.push({ filename: fname, buttonEl: btn, ownerEl, ariaLabel: label });
   });
 
   return cards;
 }
-
 
 function extractMessages() {
   const all = getAllSorted();
@@ -89,7 +89,7 @@ function extractMessages() {
       downloadCards.forEach(card => {
         if (card.ownerEl === item.el) {
           if (!msg.files.find(f => f.filename === card.filename)) {
-            msg.files.push({ filename: card.filename });
+            msg.files.push({ filename: card.filename, ariaLabel: card.ariaLabel });
           }
         }
       });
@@ -116,14 +116,11 @@ function syncIfChanged() {
   }
 }
 
-// Also sync when download cards appear (they load after message text)
 function syncIfCardsChanged() {
   const cards = findDownloadCards();
   const cardCount = cards.length;
   const cachedCardCount = messageCache.reduce((n, m) => n + (m.files ? m.files.length : 0), 0);
-  if (cardCount !== cachedCardCount) {
-    sendSync();
-  }
+  if (cardCount !== cachedCardCount) sendSync();
 }
 
 const observer = new MutationObserver(() => {
@@ -145,11 +142,8 @@ function getAllMessageEls() {
   return all.map(item => item.el);
 }
 
-function fireClick(btn) {
-  // React synthetic events don't respond to programmatic dispatch from content script context.
-  // Inject a script tag to fire the click from page context instead.
-  const label = btn.getAttribute('aria-label') || '';
-  const escaped = label.replace(/'/g, "\\'");
+function fireClick(ariaLabel) {
+  const escaped = ariaLabel.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
   const s = document.createElement('script');
   s.textContent = '(function(){' +
     'var btn=Array.from(document.querySelectorAll(\'button[aria-label^="Download "]\'))' +
@@ -160,7 +154,7 @@ function fireClick(btn) {
   s.remove();
 }
 
-function tryClickDownload(filename, attempts, resolve) {
+function tryClickDownload(filename, attempts, resolve, msgEl) {
   const cards = findDownloadCards();
   const fname = filename.toLowerCase();
   const match = cards.find(c =>
@@ -168,13 +162,33 @@ function tryClickDownload(filename, attempts, resolve) {
     c.filename.toLowerCase().includes(fname) ||
     fname.includes(c.filename.toLowerCase())
   );
+
   if (match) {
-    fireClick(match.buttonEl);
+    fireClick(match.ariaLabel);
     resolve(true);
     return;
   }
-  if (attempts <= 0) { resolve(false); return; }
-  setTimeout(() => tryClickDownload(filename, attempts - 1, resolve), 400);
+
+  if (attempts <= 0) {
+    // Last resort: fire from pre-cache even if button may be virtualized
+    const cachedLabel = downloadCache.get(fname) ||
+      Array.from(downloadCache.entries()).find(([k]) => k.includes(fname) || fname.includes(k))?.[1];
+    if (cachedLabel) {
+      fireClick(cachedLabel);
+      resolve(true); // optimistic
+    } else {
+      resolve(false);
+    }
+    return;
+  }
+
+  // On first retry, scroll message aggressively into view to force de-virtualization
+  if (attempts === 8 && msgEl) {
+    msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => tryClickDownload(filename, attempts - 1, resolve, msgEl), 800);
+  } else {
+    setTimeout(() => tryClickDownload(filename, attempts - 1, resolve, msgEl), 400);
+  }
 }
 
 browser.runtime.onMessage.addListener((message) => {
@@ -196,7 +210,7 @@ browser.runtime.onMessage.addListener((message) => {
     const msgEl = all[message.idx];
     if (msgEl) msgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
     new Promise(resolve => {
-      setTimeout(() => tryClickDownload(message.filename, 8, resolve), 600);
+      setTimeout(() => tryClickDownload(message.filename, 8, resolve, msgEl), 600);
     }).then(clicked => {
       browser.runtime.sendMessage({
         type: 'DOWNLOAD_RESULT',
