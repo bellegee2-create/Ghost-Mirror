@@ -1,7 +1,7 @@
 {
   "manifest_version": 2,
   "name": "Ghost Mirror",
-  "version": "4.15",
+  "version": "4.17",
   "description": "Mirror Claude.ai conversation to a separate scrollable window",
   "permissions": ["activeTab", "storage", "tabs"],
   "content_scripts": [{
